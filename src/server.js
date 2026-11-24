@@ -20,6 +20,13 @@ const PACK = {
   custombottle: { name: "Custom Bottle + Label", per: 2.5, setup: 500, waive: 0 },
 };
 
+const CODE_AL = "abcdefghjkmnpqrstuvwxyz23456789";
+const code = (n = 5) => Array.from(randomBytes(n), (b) => CODE_AL[b % CODE_AL.length]).join("");
+const slugify = (v) => String(v || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/&/g, " and ").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/g, "") || "client";
+const RESERVED = new Set(["admin", "api", "o", "po", "order", "wholesale", "health", "robots-txt"]);
+const linkKey = (a) => a.slug + "-" + a.code;
+const poKey = (p) => p.num.toLowerCase().replace(/^po-/, "") + "-" + p.code;
+const PUBLIC_URL = /^https:\/\/[\w.-]+$/.test(Bun.env.PUBLIC_URL || "") ? Bun.env.PUBLIC_URL : "";
 const gunzip = (b64) => Bun.gunzipSync(Buffer.from(b64, "base64"));
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const rid = (n = 6) => randomBytes(n).toString("hex");
@@ -35,11 +42,11 @@ let S;
 function seed() {
   const cat = JSON.parse(new TextDecoder().decode(gunzip(ASSETS.catalog)));
   return {
-    v: 2, auth: null, sessions: {}, ctr: { so: 1000, po: 2000 },
+    v: 3, auth: null, sessions: {}, ctr: { so: 1000, po: 2000 },
     settings: {
       company: { name: "MD Wellness", email: "support@mdwellness.com", phone: "", line1: "2278 Froude St", line2: "", city: "San Diego", state: "CA", zip: "92107", country: "USA", site: "mdwellness.com" },
       mfr: { name: "", contact: "", email: "", phone: "", line1: "", line2: "", city: "", state: "", zip: "", country: "", terms: 30, notes: "All products supplied unlabeled / bulk. Certificate of Analysis (COA) required for each lot. Temperature-controlled shipping required." },
-      terms: 0, publicLink: true, publicToken: tok(), webhook: "", moq: 25,
+      terms: 0, publicLink: true, publicToken: tok(), base: "", webhook: "", moq: 25,
       invoiceNote: "All products are sold for research purposes only. Pricing valid for 30 days.",
       floor: PRICING_DEFAULTS.floor, proj: PRICING_DEFAULTS.proj, packCost: JSON.parse(JSON.stringify(PACK_COST0)),
     },
@@ -60,6 +67,12 @@ function migrate() {
     S.products.forEach((p) => { const f = fresh.products.find((x) => x.id === p.id); if (f) p.cost = f.cost.slice(); p.cx = [null, null, null]; });
     S.orders.forEach((o) => { if (o.shipCost == null) o.shipCost = 0; });
     S.v = 2; save(); console.log("Migrated data to v2 (manufacturer cost tiers to 5,000, margin floor)");
+  }
+  if (S.v < 3) {
+    S.accounts.forEach((a) => { if (!a.slug) a.slug = slugify(a.company || a.name); if (!a.code) a.code = code(); });
+    S.pos.forEach((p) => { if (!p.code) p.code = code(); });
+    if (S.settings.base == null) S.settings.base = "";
+    S.v = 3; save(); console.log("Migrated data to v3 (client-specific link names)");
   }
 }
 let lastBackup = "";
@@ -174,7 +187,7 @@ function createPO(body) {
   if (!pids.length) throw new E("Select at least one order or add stock quantities.");
   const disc = num(body.discount, 0, 100);
   const p = {
-    id: rid(), num: "PO-" + ++S.ctr.po, token: tok(), status: "draft", created: now(), ts: { draft: now() }, discount: disc,
+    id: rid(), num: "PO-" + ++S.ctr.po, token: tok(), code: code(), status: "draft", created: now(), ts: { draft: now() }, discount: disc,
     lines: pids.map((pid) => {
       const pr = prod(pid), x = Math.floor(num(extra[pid], 0, 1e6)), qty = need[pid] + x;
       return { pid, n: pr.n, f: pr.f, need: need[pid], extra: x, qty, unit: r2(costFor(pr, qty) * (1 - disc / 100)), proj: projected(pr, tierAt(qty, COST_TIERS)), lot: "", exp: "" };
@@ -207,11 +220,13 @@ const ACT = {
   "account.save"(b) {
     const x = b.acct || {};
     let a = x.id && acct(x.id);
-    if (!a) { a = { id: rid(), token: tok(), created: now(), active: true }; S.accounts.unshift(a); }
+    if (!a) { a = { id: rid(), token: tok(), code: code(), created: now(), active: true }; S.accounts.unshift(a); }
     if (!str(x.name) && !str(x.company)) throw new E("Give the account a name or company.");
     Object.assign(a, { name: str(x.name), company: str(x.company), email: str(x.email).toLowerCase(), phone: str(x.phone, 40), type: ["client", "partner", "vendor"].includes(x.type) ? x.type : "client", discount: num(x.discount, 0, 90), tierDisc: Array.isArray(x.tierDisc) && x.tierDisc.some((v) => !blank(v)) ? SELL_TIERS.map((_, i) => (blank(x.tierDisc[i]) ? null : num(x.tierDisc[i], 0, 90))) : null, terms: Math.floor(num(x.terms, 0, 365)), shipTo: addr(x.shipTo), notes: str(x.notes, 2000), active: x.active !== false, pending: false });
+    const sl = slugify(str(x.slug, 60) || a.company || a.name);
+    if (sl !== a.slug) { a.slug = sl; if (!a.code) a.code = code(); }
   },
-  "account.rotate"(b) { const a = acct(b.id); if (a) a.token = tok(); },
+  "account.rotate"(b) { const a = acct(b.id); if (a) { a.token = tok(); a.code = code(); } },
   "account.del"(b) {
     if (S.orders.some((o) => o.accountId === b.id)) throw new E("This account has orders. Turn its link off instead of deleting it.");
     S.accounts = S.accounts.filter((a) => a.id !== b.id);
@@ -282,6 +297,7 @@ const ACT = {
     if ("floor" in x) s.floor = num(x.floor, 0, 60);
     if ("proj" in x) s.proj = num(x.proj, 0, 15);
     if (x.packCost) Object.keys(PACK_COST0).forEach((k) => { s.packCost[k] = { per: r2(num(x.packCost[k]?.per, 0, 1e4)), setup: r2(num(x.packCost[k]?.setup, 0, 1e6)) }; });
+    if ("base" in x) { const bse = str(x.base, 200).replace(/\/+$/, ""); s.base = /^https:\/\/[\w.-]+$/.test(bse) ? bse : ""; }
     s.webhook = /^https:\/\//.test(str(x.webhook, 500)) ? str(x.webhook, 500) : ""; s.invoiceNote = str(x.invoiceNote, 2000);
   },
   "settings.rotatePublic"() { S.settings.publicToken = tok(); },
@@ -314,7 +330,7 @@ function newSession(req) {
   S.sessions[sha(t)] = Date.now() + 30 * 864e5; save();
   return { "set-cookie": `mdw_s=${t}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure ? "; Secure" : ""}` };
 }
-const adminState = () => ({ settings: S.settings, products: S.products, accounts: S.accounts, orders: S.orders, pos: S.pos, durable: DURABLE, tiers: SELL_TIERS, costTiers: COST_TIERS, pack: PACK, now: now() });
+const adminState = () => ({ settings: S.settings, products: S.products, accounts: S.accounts, orders: S.orders, pos: S.pos, durable: DURABLE, publicUrl: PUBLIC_URL, tiers: SELL_TIERS, costTiers: COST_TIERS, pack: PACK, now: now() });
 function portalData(a) {
   const c = S.settings.company;
   return {
@@ -337,7 +353,9 @@ async function handle(req, srv) {
     if (path === "/health") return json({ ok: true, durable: DURABLE });
     if (path === "/") return new Response(null, { status: 302, headers: { location: "/admin" } });
     if (path === "/admin") return page("admin");
-    if (path === "/order" || /^\/(o|po)\/[\w-]{10,}$/.test(path)) return page("portal");
+    if (path === "/order" || path === "/wholesale" || /^\/(o|po)\/[\w-]{6,}$/.test(path)) return page("portal");
+    const pm = path.match(/^\/([a-z0-9][a-z0-9-]{4,60})\/?$/);
+    if (pm && !RESERVED.has(pm[1])) return page("portal");
     if (path === "/robots.txt") return new Response("User-agent: *\nDisallow: /\n");
   }
   if (!path.startsWith("/api/")) return new Response("Not found", { status: 404, headers: SEC });
@@ -368,10 +386,13 @@ async function handle(req, srv) {
   }
   // --- public: order links ---
   let mm;
-  if ((mm = path.match(/^\/api\/p\/([\w-]{10,})(\/order)?$/))) {
-    const t = mm[1], pub = S.settings.publicLink && t === S.settings.publicToken;
-    const a = pub ? null : S.accounts.find((x) => x.token === t && x.active);
-    if (!pub && !a) return json({ error: "This order link is not active. Please contact MD Wellness." }, 404);
+  if ((mm = path.match(/^\/api\/p\/([\w-]{6,})(\/order)?$/))) {
+    const t = mm[1], pub = S.settings.publicLink && (t === "wholesale" || t === S.settings.publicToken);
+    const a = pub ? null : S.accounts.find((x) => x.active && (x.token === t || (x.code && linkKey(x) === t)));
+    if (!pub && !a) {
+      if (limited("g" + ip, 40, 36e5)) return json({ error: "Too many attempts. Please try again later." }, 429);
+      return json({ error: "This order link is not active. Please contact " + S.settings.company.name + "." }, 404);
+    }
     if (m === "GET" && !mm[2]) return json(portalData(a));
     if (m === "POST" && mm[2]) {
       if (limited("o" + ip, 12, 36e5)) return json({ error: "Too many orders from this connection. Please try again later." }, 429);
@@ -385,18 +406,19 @@ async function handle(req, srv) {
         const c = b.contact || {}, email = str(c.email).toLowerCase();
         if (!str(c.name) || !/^\S+@\S+\.\S+$/.test(email)) throw new E("Please enter your name and a valid email.");
         who = S.accounts.find((x) => x.email === email && x.pending);
-        if (!who) { who = { id: rid(), token: tok(), created: now(), active: true, pending: true, type: "client", discount: 0, terms: S.settings.terms, notes: "Came in through the new-client link.", shipTo: addr(b.shipTo) }; S.accounts.unshift(who); }
+        if (!who) { who = { id: rid(), token: tok(), code: code(), created: now(), active: true, pending: true, type: "client", discount: 0, terms: S.settings.terms, notes: "Came in through the new-client link.", shipTo: addr(b.shipTo) }; S.accounts.unshift(who); }
         Object.assign(who, { name: str(c.name), company: str(c.company), email, phone: str(c.phone, 40) });
+        if (!who.slug) who.slug = slugify(who.company || who.name);
       }
       const o = createOrder(who, b, "link", false);
       save(); hook(o, who);
-      return json({ ok: true, num: o.num, total: o.total, link: pub ? "/o/" + who.token : null });
+      return json({ ok: true, num: o.num, total: o.total, link: pub ? "/" + linkKey(who) : null });
     }
   }
   // --- public: manufacturer PO link ---
-  if ((mm = path.match(/^\/api\/m\/([\w-]{10,})$/))) {
-    const p = S.pos.find((x) => x.token === mm[1] && x.status !== "draft" && x.status !== "cancelled");
-    if (!p) return json({ error: "This purchase order link is not active." }, 404);
+  if ((mm = path.match(/^\/api\/m\/([\w-]{6,})$/))) {
+    const p = S.pos.find((x) => (x.token === mm[1] || (x.code && poKey(x) === mm[1])) && x.status !== "draft" && x.status !== "cancelled");
+    if (!p) { if (limited("g" + ip, 40, 36e5)) return json({ error: "Too many attempts." }, 429); return json({ error: "This purchase order link is not active." }, 404); }
     const view = () => ({ brand: S.settings.company, mfr: S.settings.mfr, po: { num: p.num, status: p.status, ts: p.ts, created: p.created, lines: p.lines, sub: p.sub, shipping: p.shipping, total: p.total, notes: p.notes, expected: p.expected, carrier: p.carrier, tracking: p.tracking, shipTo: p.shipTo, terms: p.terms, ack: p.ack, discount: p.discount } });
     if (m === "GET") return json(view());
     if (m === "POST") {

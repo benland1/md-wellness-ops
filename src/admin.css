@@ -135,3 +135,4 @@ tr.off td{opacity:.45}
 .heldlist table{margin-top:8px}
 .pcgrid{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:8px;align-items:center}
 .limby{font-family:var(--sans);white-space:nowrap}
+.slugrow{display:flex;align-items:center;gap:6px;background:var(--s1);border:1px solid var(--line2);border-radius:8px;padding:0 10px}.slugrow input{border:0;background:transparent;padding:9px 0;flex:1;min-width:80px}.slugrow:focus-within{border-color:var(--gold)}.slugrow span{white-space:nowrap;font-size:12.5px}

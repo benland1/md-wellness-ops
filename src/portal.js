@@ -1,4 +1,4 @@
-const parts = location.pathname.split("/").filter(Boolean), MODE = parts[0] === "po" ? "po" : "order", TOKEN = parts[1] || "";
+const parts = location.pathname.split("/").filter(Boolean), MODE = parts[0] === "po" ? "po" : "order", TOKEN = (parts[0] === "po" || parts[0] === "o" ? parts[1] : parts[0]) || "";
 let P = null, M = null;
 const S = { tab: "shop", q: "", f: "All", cart: {}, open: {}, done: null, busy: false, form: null };
 const app = () => $("#app");
