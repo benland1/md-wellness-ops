@@ -121,3 +121,17 @@ tr.off td{opacity:.45}
 .p-note{margin-top:28px;padding-top:12px;border-top:1px solid #e4dfd5;font-size:11px;color:#6b655c;white-space:pre-wrap}
 @media(max-width:900px){#app{flex-direction:column}.side{width:auto;height:auto;position:static;flex-direction:row;align-items:center;padding:12px;gap:12px;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line)}.side .brand{padding:0 8px 0 4px}.side .brand .eyebrow,.sidefoot{display:none}.nav{flex-direction:row}.nav button{white-space:nowrap}.nav button svg{display:none}.main{padding:22px 16px 70px}.dbody{padding:20px 16px 50px}.payadd,.addline{grid-template-columns:1fr 1fr}.tchain{grid-template-columns:1fr;gap:0}.tn-node{border-top:0;border-left:1.5px solid var(--line2);padding:0 0 14px 16px}.tn-node:before{left:-6px;top:2px}.tn-node.done{border-left-color:var(--gold)}.p-cols{grid-template-columns:1fr}.paper{padding:22px}}
 @media print{body{background:#fff}.side,.main,#drawer,.noprint,.scrim,.toast{display:none!important}#modal{position:static;display:block}.mbody{position:static;transform:none;width:auto;max-height:none;border:0;padding:0;background:#fff;overflow:visible}.paper{padding:0;border-radius:0}}
+
+.projtag{font:500 9.5px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--amber);border:1px solid var(--gold-d);border-radius:4px;padding:2px 4px;vertical-align:middle}
+.profit{font-size:18px;font-weight:500}
+.pricebox{border:1px solid var(--line2);border-radius:var(--r);padding:16px;background:var(--bg)}
+.pricebox>*+*{margin-top:12px}
+.safesum{padding:10px 13px;border-radius:8px;font-size:13px;border:1px solid}
+.safesum.ok{border-color:#4c5843;background:rgba(147,168,126,.08);color:#c9d6bb}
+.safesum.warn{border-color:var(--gold-d);background:var(--gold-bg);color:var(--amber)}
+.safesum b{color:var(--bone)}
+.safetbl td,.safetbl th{padding:7px 10px}
+.heldlist summary{cursor:pointer;color:var(--gold);font-size:12.5px}
+.heldlist table{margin-top:8px}
+.pcgrid{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:8px;align-items:center}
+.limby{font-family:var(--sans);white-space:nowrap}

@@ -8,8 +8,9 @@ const DIR = Bun.env.DATA_DIR || VOL || "/data";
 const DURABLE = !!(Bun.env.DATA_DIR || VOL);
 const SETUP_CODE = Bun.env.SETUP_CODE || "";
 const FILE = DIR + "/db.json";
-const TIERS = [1, 10, 25, 250, 1000, 2500, 5000];
-const COST_TIERS = [25, 250, 500];
+/*__PRICING__*/
+const TIERS = SELL_TIERS;
+const PACK_COST0 = { mdwellness: { per: 0, setup: 0 }, clientlabel: { per: 0, setup: 0 }, custombottle: { per: 0, setup: 0 } };
 const O_FLOW = ["new", "confirmed", "ordered", "received", "shipped", "delivered"];
 const P_FLOW = ["draft", "sent", "confirmed", "production", "shipped", "received"];
 const PACK = {
@@ -34,21 +35,32 @@ let S;
 function seed() {
   const cat = JSON.parse(new TextDecoder().decode(gunzip(ASSETS.catalog)));
   return {
-    v: 1, auth: null, sessions: {}, ctr: { so: 1000, po: 2000 },
+    v: 2, auth: null, sessions: {}, ctr: { so: 1000, po: 2000 },
     settings: {
       company: { name: "MD Wellness", email: "support@mdwellness.com", phone: "", line1: "2278 Froude St", line2: "", city: "San Diego", state: "CA", zip: "92107", country: "USA", site: "mdwellness.com" },
       mfr: { name: "", contact: "", email: "", phone: "", line1: "", line2: "", city: "", state: "", zip: "", country: "", terms: 30, notes: "All products supplied unlabeled / bulk. Certificate of Analysis (COA) required for each lot. Temperature-controlled shipping required." },
       terms: 0, publicLink: true, publicToken: tok(), webhook: "", moq: 25,
       invoiceNote: "All products are sold for research purposes only. Pricing valid for 30 days.",
+      floor: PRICING_DEFAULTS.floor, proj: PRICING_DEFAULTS.proj, packCost: JSON.parse(JSON.stringify(PACK_COST0)),
     },
-    products: cat.P.map((p) => ({ id: p[0], f: cat.F[p[1]], c: cat.C[p[2]], n: p[3], cost: p.slice(4, 7), w: p.slice(7, 14), on: true })),
+    products: cat.P.map((p) => ({ id: p[0], f: cat.F[p[1]], c: cat.C[p[2]], n: p[3], cost: p.slice(4, 7), cx: [null, null, null], w: p.slice(7, 14), on: true })),
     accounts: [], orders: [], pos: [],
   };
 }
 function load() {
   mkdirSync(DIR, { recursive: true });
-  if (existsSync(FILE)) S = JSON.parse(readFileSync(FILE, "utf8"));
+  if (existsSync(FILE)) { S = JSON.parse(readFileSync(FILE, "utf8")); migrate(); }
   else { S = seed(); save(); }
+}
+function migrate() {
+  if ((S.v || 1) < 2) {
+    try { copyFileSync(FILE, DIR + "/pre-v2-backup.json"); } catch {}
+    const fresh = seed();
+    S.settings.floor = PRICING_DEFAULTS.floor; S.settings.proj = PRICING_DEFAULTS.proj; S.settings.packCost = fresh.settings.packCost;
+    S.products.forEach((p) => { const f = fresh.products.find((x) => x.id === p.id); if (f) p.cost = f.cost.slice(); p.cx = [null, null, null]; });
+    S.orders.forEach((o) => { if (o.shipCost == null) o.shipCost = 0; });
+    S.v = 2; save(); console.log("Migrated data to v2 (manufacturer cost tiers to 5,000, margin floor)");
+  }
 }
 let lastBackup = "";
 function save() {
@@ -72,11 +84,11 @@ const acct = (id) => S.accounts.find((a) => a.id === id);
 const order = (id) => S.orders.find((o) => o.id === id);
 const po = (id) => S.pos.find((p) => p.id === id);
 const tierIdx = (qty, tiers) => { let i = 0; tiers.forEach((t, k) => { if (qty >= t) i = k; }); return i; };
-const priceFor = (p, qty, disc) => r2(p.w[tierIdx(qty, TIERS)] * (1 - (disc || 0) / 100));
-const costFor = (p, qty) => p.cost[tierIdx(qty, COST_TIERS)];
+const priceFor = (p, qty, a) => { const ti = tierAt(qty, SELL_TIERS); return sellInfo(p, ti, discFor(a, ti), S.settings).price; };
+const costFor = (p, qty) => costs(p, S.settings)[tierAt(qty, COST_TIERS)];
 const ev = (doc, m) => { (doc.ev = doc.ev || []).push({ t: now(), m }); };
 
-function buildItems(raw, disc, allowOverride) {
+function buildItems(raw, a, allowOverride) {
   if (!Array.isArray(raw) || !raw.length) throw new E("Add at least one product.");
   if (raw.length > 150) throw new E("Too many lines.");
   const seen = new Set();
@@ -89,7 +101,7 @@ function buildItems(raw, disc, allowOverride) {
     if (seen.has(p.id + pkg)) throw new E("Duplicate line for " + p.n);
     seen.add(p.id + pkg);
     const k = PACK[pkg];
-    const unit = allowOverride && r.unit != null && r.unit !== "" ? r2(num(r.unit)) : priceFor(p, qty, disc);
+    const unit = allowOverride && r.unit != null && r.unit !== "" ? r2(num(r.unit)) : priceFor(p, qty, a);
     return { pid: p.id, n: p.n, f: p.f, qty, unit, pkg, per: k.per, setup: k.setup && !(k.waive && qty >= k.waive) ? k.setup : 0, lots: [] };
   });
 }
@@ -107,12 +119,12 @@ function poTotals(p) {
   p.paid = r2((p.pay || []).reduce((s, x) => s + x.amount, 0));
 }
 function createOrder(a, body, source, admin) {
-  const items = buildItems(body.items, a.discount, admin);
+  const items = buildItems(body.items, a, admin);
   const o = {
     id: rid(), num: "SO-" + ++S.ctr.so, accountId: a.id, source, status: "new", created: now(), ts: { new: now() },
     items, shipTo: addr(body.shipTo || a.shipTo), ref: str(body.ref, 60),
     notes: str(body.notes, 2000), internal: "", shipping: 0, adjust: 0, adjustNote: "", pay: [], poId: null,
-    carrier: "", tracking: "", terms: a.terms != null ? a.terms : S.settings.terms, ev: [],
+    shipCost: 0, carrier: "", tracking: "", terms: a.terms != null ? a.terms : S.settings.terms, ev: [],
   };
   totals(o);
   ev(o, source === "link" ? "Order submitted through order link" : "Order entered manually");
@@ -165,7 +177,7 @@ function createPO(body) {
     id: rid(), num: "PO-" + ++S.ctr.po, token: tok(), status: "draft", created: now(), ts: { draft: now() }, discount: disc,
     lines: pids.map((pid) => {
       const pr = prod(pid), x = Math.floor(num(extra[pid], 0, 1e6)), qty = need[pid] + x;
-      return { pid, n: pr.n, f: pr.f, need: need[pid], extra: x, qty, unit: r2(costFor(pr, qty) * (1 - disc / 100)), lot: "", exp: "" };
+      return { pid, n: pr.n, f: pr.f, need: need[pid], extra: x, qty, unit: r2(costFor(pr, qty) * (1 - disc / 100)), proj: projected(pr, tierAt(qty, COST_TIERS)), lot: "", exp: "" };
     }).filter((l) => l.qty > 0),
     notes: str(body.notes, 2000) || S.settings.mfr.notes, shipping: 0, pay: [], expected: "", carrier: "", tracking: "",
     terms: S.settings.mfr.terms, shipTo: { ...S.settings.company }, ev: [], ack: null,
@@ -197,7 +209,7 @@ const ACT = {
     let a = x.id && acct(x.id);
     if (!a) { a = { id: rid(), token: tok(), created: now(), active: true }; S.accounts.unshift(a); }
     if (!str(x.name) && !str(x.company)) throw new E("Give the account a name or company.");
-    Object.assign(a, { name: str(x.name), company: str(x.company), email: str(x.email).toLowerCase(), phone: str(x.phone, 40), type: ["client", "partner", "vendor"].includes(x.type) ? x.type : "client", discount: num(x.discount, 0, 90), terms: Math.floor(num(x.terms, 0, 365)), shipTo: addr(x.shipTo), notes: str(x.notes, 2000), active: x.active !== false, pending: false });
+    Object.assign(a, { name: str(x.name), company: str(x.company), email: str(x.email).toLowerCase(), phone: str(x.phone, 40), type: ["client", "partner", "vendor"].includes(x.type) ? x.type : "client", discount: num(x.discount, 0, 90), tierDisc: Array.isArray(x.tierDisc) && x.tierDisc.some((v) => !blank(v)) ? SELL_TIERS.map((_, i) => (blank(x.tierDisc[i]) ? null : num(x.tierDisc[i], 0, 90))) : null, terms: Math.floor(num(x.terms, 0, 365)), shipTo: addr(x.shipTo), notes: str(x.notes, 2000), active: x.active !== false, pending: false });
   },
   "account.rotate"(b) { const a = acct(b.id); if (a) a.token = tok(); },
   "account.del"(b) {
@@ -208,10 +220,11 @@ const ACT = {
   "order.update"(b) {
     const o = order(b.id); if (!o) throw new E("Order not found.");
     const x = b.patch || {};
-    if (x.items) { if (o.poId) throw new E("This order is already on a purchase order. Remove it from the PO to change items."); o.items = buildItems(x.items, acct(o.accountId)?.discount, true); ev(o, "Line items edited"); }
+    if (x.items) { if (o.poId) throw new E("This order is already on a purchase order. Remove it from the PO to change items."); o.items = buildItems(x.items, acct(o.accountId), true); ev(o, "Line items edited"); }
     if (x.shipTo) o.shipTo = addr(x.shipTo);
     ["notes", "internal", "adjustNote", "ref", "carrier", "tracking"].forEach((k) => { if (k in x) o[k] = str(x[k], 2000); });
     if ("shipping" in x) o.shipping = r2(num(x.shipping, 0, 1e6));
+    if ("shipCost" in x) o.shipCost = r2(num(x.shipCost, 0, 1e6));
     if ("adjust" in x) o.adjust = r2(num(x.adjust, -1e6, 1e6));
     if ("terms" in x) o.terms = Math.floor(num(x.terms, 0, 365));
     totals(o);
@@ -254,9 +267,10 @@ const ACT = {
   },
   "product.save"(b) {
     const x = b.p || {}; let p = prod(x.id);
-    if (!p) { if (!str(x.n)) throw new E("Name the product."); p = { id: "x" + rid(3), cost: [0, 0, 0], w: [0, 0, 0, 0, 0, 0, 0], on: true }; S.products.push(p); }
+    if (!p) { if (!str(x.n)) throw new E("Name the product."); p = { id: "x" + rid(3), cost: [0, 0, 0], cx: [null, null, null], w: [0, 0, 0, 0, 0, 0, 0], on: true }; S.products.push(p); }
     Object.assign(p, { n: str(x.n, 120) || p.n, f: str(x.f, 60) || p.f || "Other", c: str(x.c, 80) || p.c || "Other", on: x.on !== false });
     if (Array.isArray(x.cost) && x.cost.length === 3) p.cost = x.cost.map((v) => r2(num(v)));
+    if (Array.isArray(x.cx) && x.cx.length === 3) p.cx = x.cx.map((v) => (blank(v) ? null : r2(num(v))));
     if (Array.isArray(x.w) && x.w.length === 7) p.w = x.w.map((v) => r2(num(v)));
   },
   "settings.save"(b) {
@@ -265,6 +279,9 @@ const ACT = {
     s.company = flat(x.company, ["name", "email", "phone", "line1", "line2", "city", "state", "zip", "country", "site"]);
     s.mfr = { ...flat(x.mfr, ["name", "contact", "email", "phone", "line1", "line2", "city", "state", "zip", "country", "notes"]), terms: Math.floor(num(x.mfr?.terms, 0, 365)) };
     s.terms = Math.floor(num(x.terms, 0, 365)); s.moq = Math.floor(num(x.moq, 1, 1e5)); s.publicLink = !!x.publicLink;
+    if ("floor" in x) s.floor = num(x.floor, 0, 60);
+    if ("proj" in x) s.proj = num(x.proj, 0, 15);
+    if (x.packCost) Object.keys(PACK_COST0).forEach((k) => { s.packCost[k] = { per: r2(num(x.packCost[k]?.per, 0, 1e4)), setup: r2(num(x.packCost[k]?.setup, 0, 1e6)) }; });
     s.webhook = /^https:\/\//.test(str(x.webhook, 500)) ? str(x.webhook, 500) : ""; s.invoiceNote = str(x.invoiceNote, 2000);
   },
   "settings.rotatePublic"() { S.settings.publicToken = tok(); },
@@ -297,13 +314,13 @@ function newSession(req) {
   S.sessions[sha(t)] = Date.now() + 30 * 864e5; save();
   return { "set-cookie": `mdw_s=${t}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000${secure ? "; Secure" : ""}` };
 }
-const adminState = () => ({ settings: S.settings, products: S.products, accounts: S.accounts, orders: S.orders, pos: S.pos, durable: DURABLE, tiers: TIERS, costTiers: COST_TIERS, pack: PACK, now: now() });
+const adminState = () => ({ settings: S.settings, products: S.products, accounts: S.accounts, orders: S.orders, pos: S.pos, durable: DURABLE, tiers: SELL_TIERS, costTiers: COST_TIERS, pack: PACK, now: now() });
 function portalData(a) {
-  const disc = a ? a.discount || 0 : 0, c = S.settings.company;
+  const c = S.settings.company;
   return {
     brand: { name: c.name, email: c.email, phone: c.phone, site: c.site }, tiers: TIERS, pack: PACK, note: S.settings.invoiceNote,
-    account: a ? { name: a.name, company: a.company, email: a.email, phone: a.phone, type: a.type, discount: disc, shipTo: a.shipTo } : null,
-    products: S.products.filter((p) => p.on).map((p) => ({ id: p.id, f: p.f, c: p.c, n: p.n, p: p.w.map((v) => r2(v * (1 - disc / 100))) })),
+    account: a ? { name: a.name, company: a.company, email: a.email, phone: a.phone, type: a.type, discount: !!(a.discount || (a.tierDisc || []).some((v) => v)), shipTo: a.shipTo } : null,
+    products: S.products.filter((p) => p.on).map((p) => ({ id: p.id, f: p.f, c: p.c, n: p.n, p: SELL_TIERS.map((_, i) => sellInfo(p, i, discFor(a, i), S.settings).price) })),
     orders: a ? S.orders.filter((o) => o.accountId === a.id).slice(0, 40).map((o) => ({ num: o.num, created: o.created, status: o.status, ts: o.ts, total: o.total, paid: o.paid, units: o.units, ref: o.ref, carrier: o.carrier, tracking: o.tracking, items: o.items.map((i) => ({ n: i.n, f: i.f, qty: i.qty, unit: i.unit, per: i.per, setup: i.setup, pkg: i.pkg, lots: i.lots })), sub: o.sub, setup: o.setup, shipping: o.shipping, adjust: o.adjust })) : [],
   };
 }
@@ -362,7 +379,7 @@ async function handle(req, srv) {
       if (b.hp) return json({ ok: true, num: "SO-0" });
       const sh = addr(b.shipTo);
       if (!sh.line1 || !sh.city) throw new E("Please enter a shipping address.");
-      buildItems(b.items, 0, false);
+      buildItems(b.items, null, false);
       let who = a;
       if (!who) {
         const c = b.contact || {}, email = str(c.email).toLowerCase();

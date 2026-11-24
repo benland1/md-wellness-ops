@@ -1,0 +1,18 @@
+import { chromium } from "/opt/npm-tools/node_modules/playwright/index.mjs";
+const B="http://localhost:3111"; const b=await chromium.launch(); const pg=await (await b.newContext({viewport:{width:1440,height:1000}})).newPage();
+const errs=[]; pg.on("pageerror",e=>errs.push("PAGEERR "+e.message));
+const shot=async(n,full)=>{await pg.waitForTimeout(300);await pg.screenshot({path:`/tmp/t_${n}.png`,fullPage:!!full})};
+await pg.goto(B+"/admin"); await pg.fill("#au-pw","longpassword1"); await pg.click("button[type=submit]"); await pg.waitForSelector(".board"); await shot("overview");
+await pg.click('.side [data-v="orders"]'); await shot("orders");
+await pg.click('tr.click >> nth=0'); await pg.waitForSelector(".dbody"); await pg.evaluate(()=>{const b=document.querySelector(".dbody");const h=[...b.querySelectorAll("h3")].find(x=>x.textContent.startsWith("Profit"));b.scrollTop=h.offsetTop-80}); await shot("profit");
+await pg.keyboard.press("Escape");
+await pg.click('.side [data-v="accounts"]'); await pg.click('tr.click:has-text("Deep Discount")'); await pg.waitForSelector("#safety"); await pg.evaluate(()=>{const b=document.querySelector(".mbody");b.scrollTop=document.querySelector(".pricebox").offsetTop-40}); await shot("acct40");
+await pg.fill("#a-discount","15"); await pg.waitForTimeout(200); await pg.evaluate(()=>{const b=document.querySelector(".mbody");b.scrollTop=document.querySelector(".pricebox").offsetTop-40}); await shot("acct15");
+await pg.click('[data-a="tierToggle"]'); await pg.waitForSelector("#a-td6"); await pg.fill("#a-td0","35"); await pg.fill("#a-td6","5"); await pg.waitForTimeout(200); await pg.evaluate(()=>{const b=document.querySelector(".mbody");b.scrollTop=document.querySelector(".pricebox").offsetTop-40}); await shot("accttier");
+await pg.keyboard.press("Escape");
+await pg.click('.side [data-v="catalog"]'); await shot("catalog");
+await pg.click('.side [data-v="purchasing"]'); await pg.click('table tr.click >> nth=0'); await pg.waitForSelector(".dbody"); await shot("po");
+await pg.keyboard.press("Escape");
+await pg.click('.side [data-v="settings"]'); await shot("settings",true);
+await pg.click('.side [data-v="money"]'); await pg.click('[data-a="money"][data-v="sum"]'); await shot("money");
+console.log(errs.join("\n")||"no page errors"); await b.close();

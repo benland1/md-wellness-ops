@@ -11,10 +11,10 @@ async function js(files) {
 }
 const FONTS = '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">';
 const html = async (title, cssFiles, jsFiles) => `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>${title}</title>${FONTS}<style>${css(cssFiles.map(r).join("\n"))}</style></head><body><div id="app"></div><script>${await js(jsFiles)}</script></body></html>`;
-const pages = { admin: await html("MD Wellness — Operations", ["shared.css", "admin.css"], ["shared.js", "admin.js"]), portal: await html("MD Wellness — Wholesale Ordering", ["shared.css", "portal.css"], ["shared.js", "portal.js"]), catalog: r("catalog.json") };
+const pages = { admin: await html("MD Wellness — Operations", ["shared.css", "admin.css"], ["shared.js", "pricing.js", "admin.js"]), portal: await html("MD Wellness — Wholesale Ordering", ["shared.css", "portal.css"], ["shared.js", "portal.js"]), catalog: r("catalog.json") };
 const assets = {};
 for (const k in pages) { assets[k] = gzipSync(pages[k], { level: 9 }).toString("base64"); console.log(k, pages[k].length, "->", assets[k].length); writeFileSync(".tmp/" + k + ".html", pages[k]); }
-let server = r("server.js").replace("/*__ASSETS__*/ {}", JSON.stringify(assets));
+let server = r("server.js").replace("/*__ASSETS__*/ {}", JSON.stringify(assets)).replace("/*__PRICING__*/", r("pricing.js"));
 writeFileSync(".tmp/server.js", server);
 const sb = await Bun.build({ entrypoints: [".tmp/server.js"], minify: { whitespace: true, syntax: true }, target: "bun", external: ["node:*"] });
 if (!sb.success) throw new Error(sb.logs.join("\n"));
